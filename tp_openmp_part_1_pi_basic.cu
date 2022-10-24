@@ -2,13 +2,13 @@
 
 This program will numerically compute the integral of
 
-                  4/(1+x*x) 
-				  
-from 0 to 1.  The value of this integral is pi -- which 
+				  4/(1+x*x)
+
+from 0 to 1.  The value of this integral is pi -- which
 is great since it gives us an easy way to check the answer.
 
 History: Written by Tim Mattson, 11/1999.
-         Modified/extended by Jonathan Rouzaud-Cornabas, 10/2022
+		 Modified/extended by Jonathan Rouzaud-Cornabas, 10/2022
 */
 
 #include <limits>
@@ -16,79 +16,128 @@ History: Written by Tim Mattson, 11/1999.
 #include <cstdlib>
 #include <cstring>
 #include <sys/time.h>
+#include <iostream>
+#include <fstream>
 
 static long num_steps = 100000000;
+static int num_blocks = 1;
+static int num_threads = 1;
 double step;
 
-__global__ void piAdd(double* x, double* sums, double step, int range){
-	int i;
+__global__ void piAdd(float *sums, double step, int range)
+{
+	unsigned int i;
+	extern __shared__ float histo_private[];
+	unsigned int tid = threadIdx.x;
 
-  for (i = (range * blockIdx.x) + 1; i <= (range * (blockIdx.x+1)); i++){
-    *x = (i-0.5)*step;
-    sums[blockIdx.x] = sums[blockIdx.x] + 4.0/(1.0+(*x)*(*x));
-  }
+	histo_private[tid] = 0;
+	__syncthreads();
+
+	for (i = (blockIdx.x * blockDim.x + tid) * range + 1; i < (blockIdx.x * blockDim.x + tid+1) * range; i++)
+	{
+		float x = (i - 0.5) * step;
+		atomicAdd(&histo_private[tid], 4.0 / (1.0 + x * x));
+		__syncthreads();
+	}
+
+	// if (tid == 0)
+	// {
+	// 	for (int i = 0; i < blockDim.x; i++)
+	// 	{
+	// 		sums[blockIdx.x] += histo_private[i];
+	// 	}
+	// }
+
+	for (unsigned int stride = 1; stride <= blockDim.x; stride *= 2){
+		__syncthreads();
+		int index = (tid + 1) * stride * 2 - 1;
+		if (index < 2 * blockDim.x){
+			histo_private[index] += histo_private[index - stride];
+		}
+		
+	}
+	__syncthreads();
+
+	//if (blockDim.x * blockIdx.x + tid < InputSize) {sums[blockDim.x * blockIdx.x + tid] = histo_private[tid];}
+
+
 }
 
-int main (int argc, char** argv)
+int main(int argc, char **argv)
 {
-    
-      // Read command line arguments.
-      for ( int i = 0; i < argc; i++ ) {
-        if ( ( strcmp( argv[ i ], "-N" ) == 0 ) || ( strcmp( argv[ i ], "-num_steps" ) == 0 ) ) {
-            num_steps = atol( argv[ ++i ] );
-            printf( "  User num_steps is %ld\n", num_steps );
-        } else if ( ( strcmp( argv[ i ], "-h" ) == 0 ) || ( strcmp( argv[ i ], "-help" ) == 0 ) ) {
-            printf( "  Pi Options:\n" );
-            printf( "  -num_steps (-N) <int>:      Number of steps to compute Pi (by default 100000000)\n" );
-            printf( "  -help (-h):            print this message\n\n" );
-            exit( 1 );
-        }
-      }
-    
-    int blocks = 1000;
-    int threads = 1;
-	  double pi = 0.0;
-	  
-      step = 1.0/(double) num_steps;
 
-	  //Allocate host memory
-	  double *h_x = (double*)malloc(sizeof(double) * (num_steps/blocks));
-    double *h_sum = (double*)malloc(sizeof(double) * (num_steps/blocks));
-    *h_x = 0.0;
-    *h_sum = 0.0;
+	// Read command line arguments.
+	for (int i = 0; i < argc; i++)
+	{
+		if ((strcmp(argv[i], "-N") == 0) || (strcmp(argv[i], "-num_steps") == 0))
+		{
+			num_steps = atol(argv[++i]);
+			printf("  User num_steps is %ld\n", num_steps);
+		}
+		else if ((strcmp(argv[i], "-B") == 0) || (strcmp(argv[i], "-num_blocks") == 0))
+		{
+			num_blocks = atol(argv[++i]);
+			printf("  User num_blocks is %ld\n", num_blocks);
+		}
+		else if ((strcmp(argv[i], "-T") == 0) || (strcmp(argv[i], "-num_threads") == 0))
+		{
+			num_threads = atol(argv[++i]);
+			printf("  User num_threads is %ld\n", num_threads);
+		}
+		else if ((strcmp(argv[i], "-h") == 0) || (strcmp(argv[i], "-help") == 0))
+		{
+			printf("  Pi Options:\n");
+			printf("  -num_steps (-N) <int>:      Number of steps to compute Pi (by default 100000000)\n");
+			printf("  -num_blocks (-B) <int>:      Number of blocks used to compute Pi (by default 1)\n");
+			printf("  -num_threads (-T) <int>:      Number of threads per block to compute Pi (by default 1)\n");
+			printf("  -help (-h):            print this message\n\n");
+			exit(1);
+		}
+	}
 
-	  //Allocate device memory
-	  double * d_x;
-    double * d_sum;
-	  cudaMalloc((void **)&d_x,sizeof(double) * (num_steps/blocks));
-	  cudaMalloc((void **)&d_sum,sizeof(double) * (num_steps/blocks));
+	double pi = 0.0;
 
-	  cudaMemcpy(d_x, h_x, sizeof(double) * (num_steps/blocks), cudaMemcpyHostToDevice);
-	  cudaMemcpy(d_sum, h_sum, sizeof(double) * (num_steps/blocks), cudaMemcpyHostToDevice);
+	step = 1.0 / (double)num_steps;
 
+	// Allocate host memory
+	float *h_sum = (float *)malloc(sizeof(float) * num_blocks);
+	for (int i = 0; i<num_blocks; i++){
+		h_sum[i] = 0.0;
+	}
 
-      // Timer products.
-      struct timeval begin, end;
+	// Allocate device memory
+	float *d_sum;
+	cudaMalloc((void **)&d_sum, sizeof(float) * num_blocks);
 
-      gettimeofday( &begin, NULL );
+	cudaMemcpy(d_sum, h_sum, sizeof(float) * num_blocks, cudaMemcpyHostToDevice);
 
-	  piAdd<<<blocks, threads>>>(d_x, d_sum, step, num_steps / blocks);
-    cudaDeviceSynchronize();
-    cudaMemcpy(h_sum, d_sum, sizeof(double) * (num_steps/blocks), cudaMemcpyDeviceToHost);
-    
-    double sum = 0.0;
-    for (int i=0; i<(num_steps/blocks); i++){
-      sum += h_sum[i];
-    }
+	// Timer products.
+	struct timeval begin, end;
 
-	  pi = step * sum;
+	gettimeofday(&begin, NULL);
 
-      
-      gettimeofday( &end, NULL );
+	piAdd<<<num_blocks, num_threads, num_threads * sizeof(float)>>>(d_sum, step, num_steps / (num_blocks * num_threads));
+	cudaDeviceSynchronize();
+	cudaMemcpy(h_sum, d_sum, sizeof(float) * num_blocks, cudaMemcpyDeviceToHost);
 
-      // Calculate time.
-      double time = 1.0 * ( end.tv_sec - begin.tv_sec ) +
-                1.0e-6 * ( end.tv_usec - begin.tv_usec );
-                
-      printf("\n pi with %ld steps is %lf in %lf seconds\n ",num_steps,pi,time);
+	float sum = 0.0;
+	for (int i = 0; i < num_blocks; i++)
+	{
+		sum += h_sum[i];
+	}
+
+	pi = step * sum;
+
+	gettimeofday(&end, NULL);
+
+	// Calculate time.
+	double time = 1.0 * (end.tv_sec - begin.tv_sec) +
+				  1.0e-6 * (end.tv_usec - begin.tv_usec);
+
+	printf("\n pi with %ld steps is %lf in %lf seconds\n ", num_steps, pi, time);
+
+	std::fstream output;
+	output.open("pi_stats.csv", std::ios_base::app);
+	output << "basic"
+		   << ", " << num_blocks << ", " << num_threads << ", " << num_steps << ", " << time << "\n";
 }
