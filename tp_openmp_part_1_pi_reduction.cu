@@ -24,7 +24,7 @@ static int num_blocks = 1;
 static int num_threads = 1;
 double step;
 
-__global__ void piAdd(float *sums, double step, int range)
+__global__ void piAdd(float *sums, double step, int range, int nb_block)
 {
 	unsigned int i;
 	extern __shared__ float histo_private[];
@@ -33,18 +33,37 @@ __global__ void piAdd(float *sums, double step, int range)
 	histo_private[tid] = 0;
 	__syncthreads();
 
-	for (i = (blockIdx.x * blockDim.x + tid) * range + 1; i < (blockIdx.x * blockDim.x + tid + 1) * range; i++)
+	for (i = (blockIdx.x * blockDim.x + tid) * range + 1; i < (blockIdx.x * blockDim.x + tid+1) * range; i++)
 	{
 		float x = (i - 0.5) * step;
 		atomicAdd(&histo_private[tid], 4.0 / (1.0 + x * x));
 		__syncthreads();
 	}
 
-	if (tid == 0)
-	{
-		for (int i = 0; i < blockDim.x; i++)
-		{
-			sums[blockIdx.x] += histo_private[i];
+	for (unsigned int stride = 1; stride <= blockDim.x; stride *= 2){
+		int index = (tid + 1) * stride * 2 - 1;
+		if (index < 2 * blockDim.x){
+			histo_private[index] += histo_private[index - stride];
+		}
+		__syncthreads();
+	}
+
+	// now histo_private[blockDim.x-1] contains the partial sum of the block
+	// We just need to perform a second reduction on the block level
+
+	if (tid == 0){
+		sums[blockIdx.x] = histo_private[blockDim.x-1];
+		__syncthreads();
+		printf("sums[1] = %f\r\n", sums[1]);
+		for (unsigned int stride = 1; stride <= nb_block; stride *= 2){
+			int index = (blockIdx.x + 1) * stride * 2 - 1;
+			//printf("sums[0] = %f\r\n", sums[0]);
+			//printf("sums[1] = %f\r\n", sums[1]);
+			if (index < 2*nb_block){
+				sums[index] += sums[index - stride];
+			}
+			//printf("stride = %d blockIdx.x = %d sums[%d] = %f\r\n", stride, blockIdx.x, index, sums[index]);
+			__syncthreads();
 		}
 	}
 }
@@ -87,8 +106,7 @@ int main(int argc, char **argv)
 
 	// Allocate host memory
 	float *h_sum = (float *)malloc(sizeof(float) * num_blocks);
-	for (int i = 0; i < num_blocks; i++)
-	{
+	for (int i = 0; i<num_blocks; i++){
 		h_sum[i] = 0.0;
 	}
 
@@ -103,17 +121,11 @@ int main(int argc, char **argv)
 
 	gettimeofday(&begin, NULL);
 
-	piAdd<<<num_blocks, num_threads, num_threads * sizeof(float)>>>(d_sum, step, num_steps / (num_blocks * num_threads));
+	piAdd<<<num_blocks, num_threads, num_threads * sizeof(float)>>>(d_sum, step, num_steps / (num_blocks * num_threads), num_blocks);
 	cudaDeviceSynchronize();
 	cudaMemcpy(h_sum, d_sum, sizeof(float) * num_blocks, cudaMemcpyDeviceToHost);
 
-	float sum = 0.0;
-	for (int i = 0; i < num_blocks; i++)
-	{
-		sum += h_sum[i];
-	}
-
-	pi = step * sum;
+	pi = step * h_sum[num_blocks - 1];
 
 	gettimeofday(&end, NULL);
 

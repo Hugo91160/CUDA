@@ -33,34 +33,20 @@ __global__ void piAdd(float *sums, double step, int range)
 	histo_private[tid] = 0;
 	__syncthreads();
 
-	for (i = (blockIdx.x * blockDim.x + tid) * range + 1; i < (blockIdx.x * blockDim.x + tid+1) * range; i++)
+	for (i = (blockIdx.x * blockDim.x + tid) * range + 1; i < (blockIdx.x * blockDim.x + tid + 1) * range; i++)
 	{
 		float x = (i - 0.5) * step;
 		atomicAdd(&histo_private[tid], 4.0 / (1.0 + x * x));
 		__syncthreads();
 	}
 
-	// if (tid == 0)
-	// {
-	// 	for (int i = 0; i < blockDim.x; i++)
-	// 	{
-	// 		sums[blockIdx.x] += histo_private[i];
-	// 	}
-	// }
-
-	for (unsigned int stride = 1; stride <= blockDim.x; stride *= 2){
-		__syncthreads();
-		int index = (tid + 1) * stride * 2 - 1;
-		if (index < 2 * blockDim.x){
-			histo_private[index] += histo_private[index - stride];
+	if (tid == 0)
+	{
+		for (int i = 0; i < blockDim.x; i++)
+		{
+			sums[blockIdx.x] += histo_private[i];
 		}
-		
 	}
-	__syncthreads();
-
-	//if (blockDim.x * blockIdx.x + tid < InputSize) {sums[blockDim.x * blockIdx.x + tid] = histo_private[tid];}
-
-
 }
 
 int main(int argc, char **argv)
@@ -101,7 +87,8 @@ int main(int argc, char **argv)
 
 	// Allocate host memory
 	float *h_sum = (float *)malloc(sizeof(float) * num_blocks);
-	for (int i = 0; i<num_blocks; i++){
+	for (int i = 0; i < num_blocks; i++)
+	{
 		h_sum[i] = 0.0;
 	}
 
