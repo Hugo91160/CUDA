@@ -24,7 +24,7 @@ static int num_blocks = 1;
 static int num_threads = 1;
 double step;
 
-__global__ void piAdd(float *sums, double step, int range, int nb_block)
+__global__ void piAdd(float *sums, float step, int range, int nb_block)
 {
 	unsigned int i;
 	extern __shared__ float histo_private[];
@@ -42,7 +42,7 @@ __global__ void piAdd(float *sums, double step, int range, int nb_block)
 
 	for (unsigned int stride = 1; stride <= blockDim.x; stride *= 2){
 		int index = (tid + 1) * stride * 2 - 1;
-		if (index < 2 * blockDim.x){
+		if (index < blockDim.x){
 			histo_private[index] += histo_private[index - stride];
 		}
 		__syncthreads();
@@ -54,16 +54,15 @@ __global__ void piAdd(float *sums, double step, int range, int nb_block)
 	if (tid == 0){
 		sums[blockIdx.x] = histo_private[blockDim.x-1];
 		__syncthreads();
-		printf("sums[1] = %f\r\n", sums[1]);
 		for (unsigned int stride = 1; stride <= nb_block; stride *= 2){
+			__syncthreads();
 			int index = (blockIdx.x + 1) * stride * 2 - 1;
-			//printf("sums[0] = %f\r\n", sums[0]);
-			//printf("sums[1] = %f\r\n", sums[1]);
-			if (index < 2*nb_block){
+			__syncthreads();
+			if (index < nb_block){
 				sums[index] += sums[index - stride];
 			}
-			//printf("stride = %d blockIdx.x = %d sums[%d] = %f\r\n", stride, blockIdx.x, index, sums[index]);
 			__syncthreads();
+			
 		}
 	}
 }
