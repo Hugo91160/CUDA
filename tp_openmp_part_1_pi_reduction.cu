@@ -24,6 +24,7 @@ static int num_blocks = 1;
 static int num_threads = 1;
 double step;
 
+
 __global__ void piAdd(float *sums, float step, int range, int nb_block)
 {
 	unsigned int i;
@@ -51,19 +52,21 @@ __global__ void piAdd(float *sums, float step, int range, int nb_block)
 	// now histo_private[blockDim.x-1] contains the partial sum of the block
 	// We just need to perform a second reduction on the block level
 
+	// The block below doesn't work as there is no synchronization possible between blocks.
+	// We could use cooperative groups but I couldn't figure out the proper way to use them.
 	if (tid == 0){
 		sums[blockIdx.x] = histo_private[blockDim.x-1];
-		__syncthreads();
+		/*
 		for (unsigned int stride = 1; stride <= nb_block; stride *= 2){
-			__syncthreads();
 			int index = (blockIdx.x + 1) * stride * 2 - 1;
-			__syncthreads();
+			printf("blockIdx.x = %d\r\n", blockIdx.x);
 			if (index < nb_block){
-				sums[index] += sums[index - stride];
+				atomicAdd(&sums[index],sums[index-stride]);
 			}
 			__syncthreads();
 			
 		}
+		*/
 	}
 }
 
@@ -124,7 +127,10 @@ int main(int argc, char **argv)
 	cudaDeviceSynchronize();
 	cudaMemcpy(h_sum, d_sum, sizeof(float) * num_blocks, cudaMemcpyDeviceToHost);
 
-	pi = step * h_sum[num_blocks - 1];
+	for (unsigned int i = 0; i<num_blocks; i++){
+		pi += h_sum[i];
+	}
+	pi *= step;
 
 	gettimeofday(&end, NULL);
 
@@ -136,6 +142,6 @@ int main(int argc, char **argv)
 
 	std::fstream output;
 	output.open("pi_stats.csv", std::ios_base::app);
-	output << "basic"
+	output << "reduction"
 		   << ", " << num_blocks << ", " << num_threads << ", " << num_steps << ", " << time << "\n";
 }
